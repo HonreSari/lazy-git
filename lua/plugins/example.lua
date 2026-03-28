@@ -16,15 +16,9 @@ return {
   {
     "LazyVim/LazyVim",
     opts = {
-      colorscheme = "catppuccin",
+      colorscheme = "gruvbox",
     },
   },
-  {
-    "catppuccin/nvim",
-    name = "catppuccin",
-    priority = 1000,
-  },
-
   -- change trouble config
   {
     "folke/trouble.nvim",
