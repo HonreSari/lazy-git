@@ -16,7 +16,23 @@ return {
 
       -- Find paths for your MacBook Air M2
       local mason_path = vim.fn.stdpath("data") .. "/mason/packages"
-      local lombok_jar = vim.fn.glob(mason_path .. "/jdtls/lombok.jar")
+      local lombok_jar = mason_path .. "/jdtls/lombok.jar"
+
+      local cmd = {
+        "java",
+      }
+
+      -- Only add lombok if it exists
+      if vim.fn.filereadable(lombok_jar) == 1 then
+        table.insert(cmd, "-javaagent:" .. lombok_jar)
+      end
+
+      table.insert(cmd, "-jar")
+      table.insert(cmd, launcher_jar)
+      table.insert(cmd, "-configuration")
+      table.insert(cmd, mason_path .. "/jdtls/config_mac")
+      table.insert(cmd, "-data")
+      table.insert(cmd, vim.fn.stdpath("cache") .. "/jdtls/" .. vim.fn.fnamemodify(root_dir, ":p:h:t"))
 
       -- Spring Boot Helper Functions
       local function is_maven()
