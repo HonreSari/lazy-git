@@ -1,12 +1,21 @@
 return {
-  -- Disable the old nvim-java plugin to avoid conflicts
+  -- ToggleTerm for your terminal execution
+  {
+    "akinsho/toggleterm.nvim",
+    version = "*",
+    config = true,
+  },
+
+  -- Disable the old nvim-java to prevent conflicts
   { "nvim-java/nvim-java", enabled = false },
 
   {
     "mfussenegger/nvim-jdtls",
     ft = { "java" },
+    dependencies = { "mfussenegger/nvim-dap", "akinsho/toggleterm.nvim" },
     config = function()
       local jdtls = require("jdtls")
+      local mason_path = vim.fn.stdpath("data") .. "/mason/packages"
 
       -- Find Lombok jar safely
       local lombok_jar = vim.fn.glob(vim.fn.stdpath("data") .. "/mason/packages/jdtls/lombok.jar")
