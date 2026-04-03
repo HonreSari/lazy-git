@@ -1,95 +1,170 @@
+-- Improved Java + JDTLS plugin spec
+-- - validates mason/jdtls paths and launcher jar
+-- - only adds lombok agent if present
+-- - computes workspace from project root
+-- - places keymaps in on_attach
+-- - graceful notifications when prerequisites are missing
+
 return {
-  -- 1. Ensure ToggleTerm is available for your Spring Boot commands
+  -- ToggleTerm (used for Spring Boot commands)
   {
     "akinsho/toggleterm.nvim",
     version = "*",
     config = true,
   },
 
-  -- 2. Main Java Config
+  -- JDTLS (Eclipse Java language server)
   {
     "mfussenegger/nvim-jdtls",
     ft = { "java" },
     dependencies = { "akinsho/toggleterm.nvim" },
     config = function()
-      local jdtls = require("jdtls")
-
-      -- Find paths for your MacBook Air M2
-      local mason_path = vim.fn.stdpath("data") .. "/mason/packages"
-      local lombok_jar = mason_path .. "/jdtls/lombok.jar"
-
-      local cmd = {
-        "java",
-      }
-
-      -- Only add lombok if it exists
-      if vim.fn.filereadable(lombok_jar) == 1 then
-        table.insert(cmd, "-javaagent:" .. lombok_jar)
+      local ok, jdtls = pcall(require, "jdtls")
+      if not ok then
+        vim.notify("nvim-jdtls not found. Install the plugin to enable Java LSP.", vim.log.levels.WARN)
+        return
       end
 
+      -- Helper: notify and bail out
+      local function warn(msg)
+        vim.notify("jdtls: " .. msg, vim.log.levels.WARN)
+      end
+
+      -- Mason packages usually live under stdpath("data") .. "/mason/packages"
+      local mason_packages = vim.fn.stdpath("data") .. "/mason/packages"
+      local jdtls_pkg = mason_packages .. "/jdtls"
+
+      -- Find launcher jar
+      local launcher = vim.fn.glob(jdtls_pkg .. "/plugins/org.eclipse.equinox.launcher_*.jar")
+      if launcher == "" then
+        warn("Could not find jdtls launcher jar. Ensure jdtls is installed via Mason (mason.nvim).")
+        return
+      end
+
+      -- Detect platform-specific config folder shipped by jdtls package
+      local config_folder
+      if vim.fn.has("mac") == 1 then
+        config_folder = jdtls_pkg .. "/config_mac"
+      elseif vim.fn.has("unix") == 1 then
+        config_folder = jdtls_pkg .. "/config_linux"
+      else
+        config_folder = jdtls_pkg .. "/config_win"
+      end
+      if vim.fn.isdirectory(config_folder) == 0 then
+        warn("jdtls config folder not found at: " .. config_folder)
+        return
+      end
+
+      -- Optional lombok jar (only add -javaagent if present)
+      local lombok = jdtls_pkg .. "/lombok.jar"
+      local use_lombok = vim.fn.filereadable(lombok) == 1
+
+      -- Compute project root
+      local root_dir =
+        jdtls.setup.find_root({ "pom.xml", "build.gradle", "settings.gradle", ".git", "mvnw", "gradlew" })
+      if not root_dir or root_dir == "" then
+        root_dir = vim.loop.cwd()
+      end
+
+      -- Workspace dir (unique per project root)
+      local workspace_dir = vim.fn.stdpath("cache") .. "/jdtls/" .. vim.fn.fnamemodify(root_dir, ":p:h:t")
+
+      -- Build command
+      local cmd = { "java" }
+      if use_lombok then
+        table.insert(cmd, "-javaagent:" .. lombok)
+      end
       table.insert(cmd, "-jar")
-      table.insert(cmd, launcher_jar)
+      table.insert(cmd, launcher)
       table.insert(cmd, "-configuration")
-      table.insert(cmd, mason_path .. "/jdtls/config_mac")
+      table.insert(cmd, config_folder)
       table.insert(cmd, "-data")
-      table.insert(cmd, vim.fn.stdpath("cache") .. "/jdtls/" .. vim.fn.fnamemodify(root_dir, ":p:h:t"))
+      table.insert(cmd, workspace_dir)
 
-      -- Spring Boot Helper Functions
-      local function is_maven()
-        return vim.fn.filereadable("pom.xml") == 1
-      end
-      local function get_run_cmd()
-        return is_maven() and "./mvnw spring-boot:run" or "./gradlew bootRun"
+      -- Sanity-check java available
+      if vim.fn.executable("java") == 0 then
+        warn("`java` executable not found in $PATH.")
+        return
       end
 
+      -- jdtls config
       local config = {
-        cmd = {
-          "java",
-          "-javaagent:" .. lombok_jar,
-          "-jar",
-          vim.fn.glob(mason_path .. "/jdtls/plugins/org.eclipse.equinox.launcher_*.jar"),
-          "-configuration",
-          mason_path .. "/jdtls/config_mac",
-          "-data",
-          vim.fn.stdpath("cache") .. "/jdtls/" .. vim.fn.fnamemodify(vim.fn.getcwd(), ":p:h:t"),
+        cmd = cmd,
+        root_dir = root_dir,
+        settings = {
+          java = {
+            signatureHelp = { enabled = true },
+            contentProvider = { preferred = "fernflower" }, -- or "jd"
+          },
         },
-        root_dir = jdtls.setup.find_root({ "pom.xml", "build.gradle", ".git" }),
-
-        -- THE FIX: Put keymaps inside on_attach
+        -- Put LSP-specific keymaps and other buffer-local setup in on_attach
         on_attach = function(client, bufnr)
-          local map = function(mode, lhs, rhs, desc)
-            vim.keymap.set(mode, lhs, rhs, { buffer = bufnr, desc = desc })
+          local buf_map = function(mode, lhs, rhs, desc)
+            vim.keymap.set(mode, rhs, { buffer = bufnr, desc = desc })
+            -- note: which-key registration will pick up these mappings if which-key is configured
           end
 
-          -- Java specific tools
-          map("n", "<leader>jo", jdtls.organize_imports, "Organize Imports")
-          map("n", "<leader>jc", jdtls.extract_constant, "Extract Constant")
+          -- Basic LSP keymaps (useful defaults)
+          vim.keymap.set("n", "gd", vim.lsp.buf.definition, { buffer = bufnr, desc = "Go to definition" })
+          vim.keymap.set("n", "gr", vim.lsp.buf.references, { buffer = bufnr, desc = "References" })
+          vim.keymap.set("n", "K", vim.lsp.buf.hover, { buffer = bufnr, desc = "Hover" })
 
-          -- Your Spring Boot ToggleTerm commands
-          map("n", "<leader>jsr", function()
-            vim.cmd("TermExec cmd='" .. get_run_cmd() .. "'")
-          end, "Spring Run (Dev)")
+          -- Java-specific helpers via jdtls module
+          if jdtls then
+            vim.keymap.set("n", "<leader>jo", function()
+              jdtls.organize_imports()
+            end, { buffer = bufnr, desc = "Organize Imports" })
+            vim.keymap.set("n", "<leader>jc", function()
+              jdtls.extract_constant()
+            end, { buffer = bufnr, desc = "Extract Constant" })
+            vim.keymap.set("n", "<leader>jm", function()
+              jdtls.extract_method()
+            end, { buffer = bufnr, desc = "Extract Method" })
+          end
 
-          map("n", "<leader>jss", function()
-            vim.fn.system("pkill -f 'spring-boot:run' || pkill -f 'bootRun'")
-            vim.notify("Spring Boot Stopped", vim.log.levels.INFO)
-          end, "Spring Stop")
+          -- Spring Boot ToggleTerm commands (toggle terminal to run mvnw/gradlew)
+          local function is_maven()
+            return vim.fn.filereadable(root_dir .. "/pom.xml") == 1 or vim.fn.filereadable(root_dir .. "/mvnw") == 1
+          end
+          local function run_cmd()
+            if is_maven() then
+              return (vim.fn.filereadable(root_dir .. "/mvnw") == 1) and (root_dir .. "/mvnw spring-boot:run")
+                or ("mvn -f " .. root_dir .. " spring-boot:run")
+            else
+              return (vim.fn.filereadable(root_dir .. "/gradlew") == 1) and (root_dir .. "/gradlew bootRun")
+                or ("gradle -p " .. root_dir .. " bootRun")
+            end
+          end
+
+          -- ensure toggleterm/TermExec exists before using
+          vim.keymap.set("n", "<leader>jsr", function()
+            local cmd = run_cmd()
+            vim.cmd("TermExec cmd='" .. cmd .. "' direction=float")
+          end, { buffer = bufnr, desc = "Spring Boot Run (ToggleTerm)" })
+
+          vim.keymap.set("n", "<leader>jss", function()
+            -- Best-effort stop: attempt to kill processes matching common patterns
+            vim.fn.jobstart({ "pkill", "-f", "spring-boot:run" }, { detach = true })
+            vim.fn.jobstart({ "pkill", "-f", "bootRun" }, { detach = true })
+            vim.notify("Attempted to stop Spring Boot processes", vim.log.levels.INFO)
+          end, { buffer = bufnr, desc = "Spring Boot Stop" })
         end,
       }
 
-      -- Start JDTLS
+      -- Start or attach to jdtls
       jdtls.start_or_attach(config)
     end,
   },
 
-  -- 3. Setup Which-Key labels so they show up in the menu
+  -- Optional: which-key labels for Java. LazyVim-style opts may pick these up; this
+  -- block registers friendly group names if which-key is installed.
   {
     "folke/which-key.nvim",
     optional = true,
     opts = {
       spec = {
         { "<leader>j", group = "Java", icon = " " },
-        { "<leader>js", group = "Spring Boot", icon = "🍃" },
+        { "<leader>js", group = "Spring", icon = "🍃" },
       },
     },
   },
