@@ -1,22 +1,32 @@
 return {
   "Pocco81/auto-save.nvim",
-  event = { "InsertLeave", "TextChanged" },
+  -- InsertLeave + TextChangedP is safer than raw TextChanged
+  event = { "InsertLeave", "TextChangedP" },
   opts = {
     enabled = true,
+    write_all_buffers = false, -- Only saves the current buffer
     condition = function(buf)
-      local fn = vim.fn
-
-      -- 1. ADD THIS LINE: Check if the buffer actually exists and is valid
+      -- 1. Guard against invalid/closed buffers
       if not buf or not vim.api.nvim_buf_is_valid(buf) then
         return false
       end
 
-      -- 2. Your existing logic for filetypes
-      local utils = require("auto-save.utils.data")
-      if utils.not_in(fn.getbufvar(buf, "&filetype"), { "neo-tree", "TelescopePrompt", "harpoon" }) then
-        return true
-      end
-      return false
+      -- 2. Use modern, fast buffer-local API
+      local ft = vim.bo[buf].filetype
+
+      -- 3. Exclude UI, transient, and sensitive buffers
+      local excluded = {
+        "neo-tree",
+        "TelescopePrompt",
+        "harpoon",
+        "lazy",
+        "mason",
+        "checkhealth",
+        "gitcommit",
+        "java", -- Optional: Disable for Java to prevent LSP compile spam
+      }
+
+      return not vim.tbl_contains(excluded, ft)
     end,
   },
 }

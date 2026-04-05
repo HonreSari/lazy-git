@@ -1,19 +1,16 @@
--- Improved Java + JDTLS plugin spec
--- - validates mason/jdtls paths and launcher jar
--- - only adds lombok agent if present
--- - computes workspace from project root
--- - places keymaps in on_attach
--- - graceful notifications when prerequisites are missing
-
 return {
-  -- ToggleTerm (used for Spring Boot commands)
+  -- ============================================================================
+  -- ToggleTerm: For running Spring Boot commands in floating/terminal splits
+  -- ============================================================================
   {
     "akinsho/toggleterm.nvim",
     version = "*",
     config = true,
   },
 
-  -- JDTLS (Eclipse Java language server)
+  -- ============================================================================
+  -- nvim-jdtls: Eclipse Java Language Server integration
+  -- ============================================================================
   {
     "mfussenegger/nvim-jdtls",
     ft = { "java" },
@@ -25,23 +22,22 @@ return {
         return
       end
 
-      -- Helper: notify and bail out
       local function warn(msg)
         vim.notify("jdtls: " .. msg, vim.log.levels.WARN)
       end
 
-      -- Mason packages usually live under stdpath("data") .. "/mason/packages"
+      -- Mason packages path
       local mason_packages = vim.fn.stdpath("data") .. "/mason/packages"
       local jdtls_pkg = mason_packages .. "/jdtls"
 
       -- Find launcher jar
       local launcher = vim.fn.glob(jdtls_pkg .. "/plugins/org.eclipse.equinox.launcher_*.jar")
       if launcher == "" then
-        warn("Could not find jdtls launcher jar. Ensure jdtls is installed via Mason (mason.nvim).")
+        warn("Could not find jdtls launcher jar. Run :MasonInstall jdtls")
         return
       end
 
-      -- Detect platform-specific config folder shipped by jdtls package
+      -- Detect platform-specific config folder
       local config_folder
       if vim.fn.has("mac") == 1 then
         config_folder = jdtls_pkg .. "/config_mac"
@@ -55,18 +51,18 @@ return {
         return
       end
 
-      -- Optional lombok jar (only add -javaagent if present)
+      -- Optional Lombok support
       local lombok = jdtls_pkg .. "/lombok.jar"
       local use_lombok = vim.fn.filereadable(lombok) == 1
 
-      -- Compute project root
+      -- Find project root
       local root_dir =
         jdtls.setup.find_root({ "pom.xml", "build.gradle", "settings.gradle", ".git", "mvnw", "gradlew" })
       if not root_dir or root_dir == "" then
         root_dir = vim.loop.cwd()
       end
 
-      -- Workspace dir (unique per project root)
+      -- Unique workspace per project
       local workspace_dir = vim.fn.stdpath("cache") .. "/jdtls/" .. vim.fn.fnamemodify(root_dir, ":p:h:t")
 
       -- Build command
@@ -81,52 +77,97 @@ return {
       table.insert(cmd, "-data")
       table.insert(cmd, workspace_dir)
 
-      -- Sanity-check java available
+      -- Check Java executable
       if vim.fn.executable("java") == 0 then
-        warn("`java` executable not found in $PATH.")
+        warn("`java` executable not found in $PATH. Install JDK 17+ for Spring Boot.")
         return
       end
 
-      -- jdtls config
+      -- ========================================================================
+      -- Helper: Auto-detect Spring Boot port from config files
+      -- ========================================================================
+      local function get_spring_boot_port(project_root)
+        local paths = {
+          project_root .. "/src/main/resources/application.properties",
+          project_root .. "/src/main/resources/application.yml",
+          project_root .. "/src/main/resources/application.yaml",
+          project_root .. "/resources/application.properties",
+          project_root .. "/resources/application.yml",
+        }
+
+        for _, path in ipairs(paths) do
+          if vim.fn.filereadable(path) == 1 then
+            local content = vim.fn.readfile(path)
+            for _, line in ipairs(content) do
+              -- Match: server.port=8081 or server.port: 8081
+              local port = line:match("^%s*server%.port%s*[:=]%s*(%d+)%s*$")
+              if port then
+                return tonumber(port)
+              end
+            end
+          end
+        end
+
+        -- Fallback to env var
+        local env_port = os.getenv("SPRING_BOOT_PORT")
+        if env_port then
+          return tonumber(env_port)
+        end
+
+        -- Default
+        return 8080
+      end
+
+      -- ========================================================================
+      -- LSP Configuration with Keymaps
+      -- ========================================================================
       local config = {
         cmd = cmd,
         root_dir = root_dir,
         settings = {
           java = {
             signatureHelp = { enabled = true },
-            contentProvider = { preferred = "fernflower" }, -- or "jd"
+            contentProvider = { preferred = "fernflower" },
+            completion = { enabled = true },
+            format = { enabled = true },
           },
         },
-        -- Put LSP-specific keymaps and other buffer-local setup in on_attach
         on_attach = function(client, bufnr)
-          local buf_map = function(mode, lhs, rhs, desc)
-            vim.keymap.set(mode, rhs, { buffer = bufnr, desc = desc })
-            -- note: which-key registration will pick up these mappings if which-key is configured
+          -- ✅ Correct keymap helper: set(mode, lhs, rhs, opts)
+          local function buf_set_keymap(mode, lhs, rhs, desc)
+            vim.keymap.set(mode, lhs, rhs, { buffer = bufnr, desc = desc })
           end
 
-          -- Basic LSP keymaps (useful defaults)
-          vim.keymap.set("n", "gd", vim.lsp.buf.definition, { buffer = bufnr, desc = "Go to definition" })
-          vim.keymap.set("n", "gr", vim.lsp.buf.references, { buffer = bufnr, desc = "References" })
-          vim.keymap.set("n", "K", vim.lsp.buf.hover, { buffer = bufnr, desc = "Hover" })
+          -- Basic LSP navigation
+          buf_set_keymap("n", "gd", vim.lsp.buf.definition, "Go to definition")
+          buf_set_keymap("n", "gr", vim.lsp.buf.references, "References")
+          buf_set_keymap("n", "K", vim.lsp.buf.hover, "Hover")
+          buf_set_keymap("n", "<leader>ca", vim.lsp.buf.code_action, "Code action")
 
-          -- Java-specific helpers via jdtls module
+          -- Java-specific via jdtls
           if jdtls then
-            vim.keymap.set("n", "<leader>jo", function()
+            buf_set_keymap("n", "<leader>jo", function()
               jdtls.organize_imports()
-            end, { buffer = bufnr, desc = "Organize Imports" })
-            vim.keymap.set("n", "<leader>jc", function()
+            end, "Organize Imports")
+            buf_set_keymap("n", "<leader>jv", function()
+              jdtls.extract_variable()
+            end, "Extract Variable")
+            buf_set_keymap("n", "<leader>jc", function()
               jdtls.extract_constant()
-            end, { buffer = bufnr, desc = "Extract Constant" })
-            vim.keymap.set("n", "<leader>jm", function()
+            end, "Extract Constant")
+            buf_set_keymap("n", "<leader>jm", function()
               jdtls.extract_method()
-            end, { buffer = bufnr, desc = "Extract Method" })
+            end, "Extract Method")
           end
 
-          -- Spring Boot ToggleTerm commands (toggle terminal to run mvnw/gradlew)
+          -- ====================================================================
+          -- Spring Boot ToggleTerm Commands
+          -- ====================================================================
           local function is_maven()
             return vim.fn.filereadable(root_dir .. "/pom.xml") == 1 or vim.fn.filereadable(root_dir .. "/mvnw") == 1
           end
-          local function run_cmd()
+
+          local function get_run_cmd()
             if is_maven() then
               return (vim.fn.filereadable(root_dir .. "/mvnw") == 1) and (root_dir .. "/mvnw spring-boot:run")
                 or ("mvn -f " .. root_dir .. " spring-boot:run")
@@ -136,28 +177,58 @@ return {
             end
           end
 
-          -- ensure toggleterm/TermExec exists before using
-          vim.keymap.set("n", "<leader>jsr", function()
-            local cmd = run_cmd()
+          -- 🚀 Run Spring Boot
+          buf_set_keymap("n", "<leader>jsr", function()
+            local cmd = get_run_cmd()
             vim.cmd("TermExec cmd='" .. cmd .. "' direction=float")
-          end, { buffer = bufnr, desc = "Spring Boot Run (ToggleTerm)" })
+          end, "Spring Boot Run")
 
-          vim.keymap.set("n", "<leader>jss", function()
-            -- Best-effort stop: attempt to kill processes matching common patterns
+          -- 🛑 Stop Spring Boot (kill processes)
+          buf_set_keymap("n", "<leader>jss", function()
             vim.fn.jobstart({ "pkill", "-f", "spring-boot:run" }, { detach = true })
             vim.fn.jobstart({ "pkill", "-f", "bootRun" }, { detach = true })
-            vim.notify("Attempted to stop Spring Boot processes", vim.log.levels.INFO)
-          end, { buffer = bufnr, desc = "Spring Boot Stop" })
+            vim.notify("⚠ Attempted to stop Spring Boot processes", vim.log.levels.INFO)
+          end, "Spring Boot Stop")
+
+          -- ♻ Compile Workspace → DevTools auto-restart (NO manual stop needed)
+          buf_set_keymap("n", "<leader>jsc", function()
+            if jdtls then
+              jdtls.compile_workspace()
+              vim.notify("✓ Workspace compiled. DevTools will auto-restart if enabled.", vim.log.levels.INFO)
+            end
+          end, "Compile Workspace (DevTools Refresh)")
+
+          -- 🔄 Actuator /refresh endpoint (auto-detects port, NO restart)
+          buf_set_keymap("n", "<leader>jsa", function()
+            local port = get_spring_boot_port(root_dir)
+            local url = "http://localhost:" .. port .. "/actuator/refresh"
+
+            if vim.fn.executable("curl") == 1 then
+              local code =
+                vim.fn.system({ "curl", "-s", "-o", "/dev/null", "-w", "%{http_code}", "-X", "POST", url }):trim()
+              if code == "200" then
+                vim.notify("✓ Refreshed via Actuator (port " .. port .. ")", vim.log.levels.INFO)
+              else
+                vim.notify("✗ Actuator failed (HTTP " .. code .. ") on port " .. port, vim.log.levels.WARN)
+              end
+            elseif vim.fn.executable("wget") == 1 then
+              vim.fn.system({ "wget", "-q", "--post-data", "", "-O", "-", url })
+              vim.notify("✓ Sent refresh to port " .. port, vim.log.levels.INFO)
+            else
+              vim.notify("⚠ Install curl/wget for Actuator refresh", vim.log.levels.WARN)
+            end
+          end, "Actuator Refresh (Auto-Port)")
         end,
       }
 
-      -- Start or attach to jdtls
+      -- Start or attach JDTLS
       jdtls.start_or_attach(config)
     end,
   },
 
-  -- Optional: which-key labels for Java. LazyVim-style opts may pick these up; this
-  -- block registers friendly group names if which-key is installed.
+  -- ============================================================================
+  -- Which-Key: Friendly labels for Java/Spring keymaps
+  -- ============================================================================
   {
     "folke/which-key.nvim",
     optional = true,
