@@ -15,7 +15,7 @@ return {
   {
     "LazyVim/LazyVim",
     opts = {
-      colorscheme = "kanagawa", -- Change this to your favorite
+      colorscheme = "kanagawa-dragon", -- Change this to your favorite
     },
   },
 }
